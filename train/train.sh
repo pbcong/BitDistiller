@@ -6,7 +6,7 @@ export GLOO_SOCKET_IFNAME="lo"
 export NCCL_SOCKET_IFNAME="lo"
 export WANDB_DISABLED=true  
 
-deepspeed --num_gpus=8 train.py \
+deepspeed --num_gpus=4 train.py \
     --model_name_or_path $MODEL_PATH \
     --data_path $1 \
     --model_max_length 1024 \

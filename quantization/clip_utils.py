@@ -1,5 +1,5 @@
 #TODO Dataset Path
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, OPTForCausalLM, BloomForCausalLM
 from transformers.models.llama.modeling_llama import LlamaForCausalLM
 import torch
 from datasets import load_dataset
@@ -7,7 +7,7 @@ import random
 import json
 import os
 import torch.nn as nn
-def get_calib_dataset(datasets="pileval", tokenizer=None, n_samples=128, block_size=1024):
+def get_calib_dataset(datasets="pile", tokenizer=None, n_samples=128, block_size=1024):
     if datasets == "pile":
         return get_pile_dataset(tokenizer=tokenizer, n_samples=n_samples, block_size=block_size)
     elif datasets == "gsm8k":
@@ -77,7 +77,7 @@ def get_calib_dataset_code(tokenizer=None, n_samples=512, block_size=512):
 
 def get_calib_dataset_gsm8k(tokenizer=None, n_samples=512, block_size=512):
     # download from here: https://github.com/OFA-Sys/gsm8k-ScRel/blob/main/data/train_use.jsonl
-    data_path = "/root/model/gsm8k-ScRel/data/train_use.jsonl"
+    data_path = "./gsm8k_calib/train_use.jsonl"
 
     with open(data_path, 'r') as f:
         dataset_for_eval = f.readlines()
@@ -122,6 +122,8 @@ def get_blocks(model):
         layers = model.transformer.blocks
     elif "falcon" in str(model.__class__).lower():
         layers = model.transformer.h
+    elif "qwen2" in str(model.__class__).lower():
+        layers = model.model.layers
     else:
         raise NotImplementedError(type(model))
     return layers
@@ -150,6 +152,11 @@ def move_embed(model, device):
         model.transformer.emb_drop = model.transformer.emb_drop.to(device)
     elif "falcon" in str(model.__class__).lower():
         model.transformer.word_embeddings = model.transformer.word_embeddings.to(device)
+    elif "qwen2" in str(model.__class__).lower():
+        # Add support for Qwen2 models
+        # print(model.model)
+        model.model.embed_tokens = model.model.embed_tokens.to(device)
+        model.model.rotary_emb = model.model.rotary_emb.to(device)
     else:
         raise NotImplementedError(type(model))
 
@@ -172,8 +179,8 @@ def get_op_name(module, op):
 
 
 def build_model_and_enc(model_path):
-    if not os.path.exists(model_path):  # look into ssd
-        raise FileNotFoundError(f"{model_path} not found!")
+    # if not os.path.exists(model_path):  # look into ssd
+    #     raise FileNotFoundError(f"{model_path} not found!")
     print(f"* Building model {model_path}")
 
     # all hf model
