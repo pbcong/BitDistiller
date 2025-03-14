@@ -52,8 +52,19 @@ def llama_eval(model, testenc, dev, seqlen = 2048):
     use_cache = model.config.use_cache
     model.config.use_cache = False
     layers = model.model.layers
-
+    # print(model)
+    # print(layers)
     model.model.embed_tokens = model.model.embed_tokens.to(dev)
+    
+    # Check if it's a Qwen2 model
+    is_qwen2 = "qwen2" in str(model.__class__).lower()
+    
+    # For Qwen2 models, we need to handle rotary embeddings
+    if is_qwen2:
+        # Check if the model has rotary_emb attribute
+        if hasattr(model.model, 'rotary_emb'):
+            model.model.rotary_emb = model.model.rotary_emb.to(dev)
+    
     layers[0] = layers[0].to(dev)
 
     dtype = next(iter(model.parameters())).dtype
@@ -61,7 +72,6 @@ def llama_eval(model, testenc, dev, seqlen = 2048):
     cache = {'i': 0, 'attention_mask': None}
 
     class Catcher(nn.Module):
-
         def __init__(self, module):
             super().__init__()
             self.module = module
@@ -84,19 +94,71 @@ def llama_eval(model, testenc, dev, seqlen = 2048):
 
     layers[0] = layers[0].cpu()
     model.model.embed_tokens = model.model.embed_tokens.cpu()
+    if is_qwen2 and hasattr(model.model, 'rotary_emb'):
+        model.model.rotary_emb = model.model.rotary_emb.cpu()
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
     position_ids = cache['position_ids']
-
+    
+    # Create a custom implementation of Qwen2RotaryEmbedding.forward for Qwen2 models
+    def compute_position_embeddings(x, position_ids, rotary_emb):
+        """
+        Compute position embeddings (cos, sin) for Qwen2 models based on the provided implementation.
+        """
+        # Move rotary_emb to the device
+        rotary_emb = rotary_emb.to(x.device)
+        
+        # Call the forward method of rotary_emb
+        with torch.no_grad():
+            cos, sin = rotary_emb(x, position_ids)
+        
+        return cos, sin
+    
     for i in tqdm(range(len(layers))):
-        # print('layer', i)
-        layer = layers[i].to(dev)
+        # print('--'*20)
+        # print('layer', layers[i])
+        # print('--'*20)
+        layer = layers[i].to(dev)   
         layer = layers[i].to(dtype)
         for j in range(nsamples):
             # print("dtype", inps[j].unsqueeze(0).dtype)
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
+            if is_qwen2:
+                # For Qwen2 models, we need to compute position_embeddings for each sample
+                x = inps[j].unsqueeze(0)
+                
+                # If the model has rotary_emb, compute position_embeddings
+                if hasattr(model.model, 'rotary_emb'):
+                    # Compute position_embeddings (cos, sin) from position_ids
+                    position_embeddings = compute_position_embeddings(
+                        x, 
+                        position_ids.to(dev), 
+                        model.model.rotary_emb
+                    )
+                    
+                    # Pass position_embeddings to the layer
+                    outs[j] = layer(
+                        x, 
+                        attention_mask=attention_mask, 
+                        position_ids=position_ids,
+                        position_embeddings=position_embeddings
+                    )[0]
+                else:
+                    # Fallback to using position_ids if rotary_emb is not available
+                    outs[j] = layer(
+                        x, 
+                        attention_mask=attention_mask, 
+                        position_ids=position_ids
+                    )[0]
+            else:
+                # For other models, pass position_ids as before
+                outs[j] = layer(
+                    inps[j].unsqueeze(0), 
+                    attention_mask=attention_mask, 
+                    position_ids=position_ids
+                )[0]
+                
         layers[i] = layer.cpu()
         del layer
         torch.cuda.empty_cache()
